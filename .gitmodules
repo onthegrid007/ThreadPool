@@ -1,0 +1,12 @@
+[submodule "vendor/Semaphore"]
+	path = vendor/Semaphore
+	url = https://github.com/onthegrid007/Semaphore
+[submodule "vendor/Timestamp"]
+	path = vendor/Timestamp
+	url = https://github.com/onthegrid007/Timestamp
+[submodule "vendor/PlatformDetection"]
+	path = vendor/PlatformDetection
+	url = https://github.com/onthegrid007/PlatformDetection
+[submodule "vendor/ADVClock"]
+	path = vendor/ADVClock
+	url = https://github.com/onthegrid007/ADVClock
