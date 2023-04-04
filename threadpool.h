@@ -22,7 +22,7 @@
 #include "vendor/Semaphore/semaphore.h"
 
 #define BADLOG(x) std::cout << x << std::endl;
-#define BADLOGV(x) BADLOG(#x << ":") BADLOG(x << std::endl)
+#define BADLOGV(x) BADLOG(#x << ":") BADLOG((x) << std::endl)
 
 using namespace std::this_thread;
 using namespace std::chrono;
