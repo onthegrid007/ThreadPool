@@ -11,7 +11,7 @@ const ThreadPool::Task ThreadPool::NullTask = std::move([](){});
 
 void ThreadPool::SIGHandler(int sig, siginfo_t* info, void* extra) {
 	// BADLOGV(sig);
-	ThreadPool* pool = (info->si_ptr ? (ThreadPool*)info->si_ptr : nullptr);
+	const ThreadPool* pool = (info->si_ptr ? (ThreadPool*)info->si_ptr : nullptr);
 	// BADLOG("caught: " << int(sig));
 	switch(sig) {
 		case SIGUSR1:
