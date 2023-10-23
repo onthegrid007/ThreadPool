@@ -6,17 +6,17 @@
 
 #ifndef THREADPOOL_HPP_
 #define THREADPOOL_HPP_
-#include <signal.h>
-#include <setjmp.h>
-#include <string.h>
+#include <csignal>
+#include <csetjmp>
+#include <cstring>
 #include <thread>
 #include <deque>
-#include <vector>
+// #include <vector>
 #include <functional>
 #include <future>
-#include <utility>
-#include <stdexcept>
-#include <type_traits>
+// #include <utility>
+// #include <stdexcept>
+// #include <type_traits>
 
 #include "vendor/PlatformDetection/PlatformDetection.h"
 #include "vendor/ADVClock/vendor/Timestamp/timestamp.hpp"
@@ -28,14 +28,13 @@ using namespace std::chrono;
 class PlatformThread : public std::thread {
 	public:
 	template<typename... Args>
-	PlatformThread(Args... args) : std::thread(args...), vState(VolitileState::RUNNING) {}
+	PlatformThread(Args... args) : std::thread(args...) {}//}, vState(VolitileState::RUNNING) {}
 	enum VolitileState : std::int8_t {
 		IDLE = 0,
 		RUNNING,
 		PAUSED,
 		DEAD
 	};
-	std::atomic<VolitileState> vState;
 	#ifdef _BUILD_PLATFORM_LINUX
 	public:
 	typedef __pid_t IDType;
@@ -88,6 +87,7 @@ class ThreadPool : public NonCopyable {
 	}
 	
 	void ToggleQueueProcedure() {
+		// fix someother time
 		// m_queueProcedure = !m_queueProcedure;
 	}
 	
@@ -116,9 +116,8 @@ class ThreadPool : public NonCopyable {
 	}
 	
 	typedef struct Worker_t {
-		PlatformThread* Thread;
 		PlatformThread::IDType ID = 0;
-		Semaphore Sem;
+		PlatformThread::VolitileState vState = PlatformThread::VolitileState::RUNNING;
 		Timestamp Begin;
 	} WorkerType;
 
@@ -126,8 +125,7 @@ class ThreadPool : public NonCopyable {
 		std::lock_guard<std::mutex> lock(m_workerMTX);
 		auto workerItt(m_workers.begin());
 		while(workerItt != m_workers.end()) {
-			if((*workerItt).Thread->vState == PlatformThread::VolitileState::DEAD) {
-				delete (*workerItt).Thread;
+			if((*workerItt).vState == PlatformThread::VolitileState::DEAD) {
 				m_workers.erase(workerItt);
 			}
 			else {
@@ -144,7 +142,7 @@ class ThreadPool : public NonCopyable {
 			m_workers.emplace_back(); //nullptr, 0, {0}, Timestamp{});
 			WorkerType* newW{&m_workers.back()};
 			Semaphore idLock{0};
-			auto workerTask{[&](WorkerType* self){
+			PlatformThread([&](WorkerType* self){
 				TaskType T{NullTask};
 				sigjmp_buf RunTask, SigChk;
 				self->ID = PlatformThread::ID();
@@ -156,35 +154,32 @@ class ThreadPool : public NonCopyable {
 					if(sigsetjmp(RunTask, 1)) {
 						try {
 							T();
-						} catch(const char* e) {
-							// std::string(e.what()) == "S" ? longjmp(SigChk, 0) : void();in::
-						}
+						} catch(...) {}
 					}
 					sigsetjmp(SigChk, 1);
 					try {
-						const auto until{Timestamp::ClockType::now() + seconds(m_decayTimeout)};
-						self->Thread->vState = PlatformThread::VolitileState::IDLE;
-						if(m_taskSem.waitFor([&](const int64_t cVal, const int64_t cInitVal){ return (!m_tasks.empty()) || (m_poolState.load() == PoolState::SHUTTING_DOWN) || (m_poolState.load() == PoolState::INACTIVE); }, until) == std::cv_status::timeout) {
+						self->vState = PlatformThread::VolitileState::IDLE;
+						if(m_taskSem.waitFor([&](const int64_t cVal, const int64_t cInitVal){ return (!m_tasks.empty()) || (m_poolState.load() == PoolState::SHUTTING_DOWN) || (m_poolState.load() == PoolState::INACTIVE); }, 1000, 30) && (m_workers.size() > 2)) {
 							Decay();
 							break;
 						}
 						if((m_poolState.load() == PoolState::SHUTTING_DOWN) || (m_poolState.load() == PoolState::INACTIVE)) break;
-						self->Thread->vState = PlatformThread::VolitileState::RUNNING;
+						self->vState = PlatformThread::VolitileState::RUNNING;
 						std::lock_guard<std::mutex> lock(m_taskMTX);
 						if(!m_tasks.empty()) {
-							T = m_tasks.front();
+							T = std::move(m_tasks.front());
 							m_tasks.pop_front();
 							throw "T";
 						}
 					} catch(const char* e) {
-						!(strcmp(e, "T")) ? siglongjmp(RunTask, 1) : void();
-						!(strcmp(e, "S")) ? siglongjmp(SigChk, 0) : void();
+						strcmp(e, "T") ? void(0) : siglongjmp(RunTask, 1);
+						strcmp(e, "S") ? void(0) : siglongjmp(SigChk, 0);
 					}
 				}
 				self->ID = PlatformThread::IDType();
-				self->Thread->vState = PlatformThread::VolitileState::DEAD;
-			}};
-			newW->Thread = new PlatformThread(workerTask, newW);
+				self->vState = PlatformThread::VolitileState::DEAD;
+				return;
+			}, newW).detach();
 			idLock.waitForC(1);
 		}
 	}
@@ -202,10 +197,10 @@ class ThreadPool : public NonCopyable {
 	std::mutex m_pauseMTX;
 	std::atomic<bool> m_paused;
 	std::atomic<PoolState> m_poolState;
-	static constexpr struct sigaction m_siga{.sa_sigaction = ThreadPool::SIGHandler, .sa_mask = {}, .sa_flags = SA_SIGINFO | SA_NODEFER, .sa_restorer = nullptr};
+	static constexpr struct sigaction m_siga{.sa_sigaction = ThreadPool::SIGHandler, .sa_mask = {}, .sa_flags = SA_SIGINFO, .sa_restorer = nullptr};
 	const __sigval_t m_sv;
 	std::atomic<SizeType> m_missedTaskEnqueues; 
-	std::uint8_t m_decayTimeout{30};// }
+	std::uint8_t m_decayTimeout{30};
 	
 	public:
 	ThreadPool(SizeType workerLimit, QueueProcedure qProcedure, SizeType queueLimit) :
@@ -227,7 +222,7 @@ class ThreadPool : public NonCopyable {
 			m_pauseMTX.unlock();
 			m_paused.store(false);
 			for(auto& worker : m_workers)
-				if(worker.ID)
+				if(worker.ID != 0)
 					sigqueue(worker.ID, SIGPOLL, m_sv);
 			sleep_for(seconds(1));
 		}
@@ -235,64 +230,97 @@ class ThreadPool : public NonCopyable {
 			m_poolState.store(PoolState::SHUTTING_DOWN);
 		}
 		for(auto& worker : m_workers) {
-			while(!(worker.Thread->joinable())) {
-				m_taskSem.spinAll();
-				if(worker.ID)
-					sigqueue(worker.ID, SIGUSR1, m_sv);
+			if(worker.ID != 0) {
+				// m_taskSem.spinAll();
+				sigqueue(worker.ID, SIGUSR1, m_sv);
 			}
-			m_taskSem.spinAll();
-			worker.Thread->join();
-			delete worker.Thread;
+			while(worker.vState != PlatformThread::VolitileState::DEAD) m_taskSem.spinAll();
 		}
-		
+		Decay();
 	}
 	
-	template<typename F, typename... Args, typename RTN_T = typename std::invoke_result<F, Args...>::type>
-	auto enqueue_work(F f, Args... args, EnqueuePriority&& priority) -> std::future<RTN_T> {
-		auto tprom{std::make_shared<std::promise<RTN_T>>()};
-		auto rtn{tprom->get_future()};
-		if(m_poolState != PoolState::INACTIVE) {
-			if(m_workers.size() < m_workerLimit) AllocateWorker();
-			while(true) {
-				if((m_tasks.size() >= m_queueLimit) && (m_queueProcedure == QueueProcedure::BLOCKING)) {
-					std::lock_guard<std::mutex> lock(m_pauseMTX);
-					m_taskSem.waitFor([&](const SizeType cVal, const SizeType CInitVal){ return (m_tasks.size() < m_queueLimit); });
-				}
-				m_taskMTX.lock();
-				if(m_tasks.size() < m_queueLimit) {
-					std::function<RTN_T()> tfunc = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
-					TaskType etask{[&, tprom, tfunc](){
-						try {
-							if constexpr(std::is_void<RTN_T>::value) {
-								tfunc();
-								tprom->set_value();
-							}
-							else {
-								tprom->set_value(tfunc());
-							}
-						}
-						catch (...) {
+	template<bool wRTN, typename F, typename... Args, typename RTN_T = typename std::invoke_result<F, Args...>::type>
+	auto enqueue_work(F f, Args... args, EnqueuePriority&& priority) {
+		if constexpr(wRTN) {
+			auto tprom{std::make_shared<std::promise<RTN_T>>()};
+			auto rtn{tprom->get_future()};
+			if(m_poolState != PoolState::INACTIVE) {
+				if(m_workers.size() < m_workerLimit) AllocateWorker();
+				while(true) {
+					if((m_tasks.size() >= m_queueLimit) && (m_queueProcedure == QueueProcedure::BLOCKING)) {
+						std::lock_guard<std::mutex> lock(m_pauseMTX);
+						m_taskSem.waitFor([&](const SizeType cVal, const SizeType CInitVal){ return (m_tasks.size() < m_queueLimit); });
+					}
+					m_taskMTX.lock();
+					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
+						std::function<RTN_T()> tfunc = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+						TaskType etask{[tprom, tfunc](){
 							try {
-								tprom->set_exception(std::current_exception());
-							} catch (...) {}
+								if constexpr(std::is_void<RTN_T>::value) {
+									tfunc();
+									tprom->set_value();
+								}
+								else {
+									tprom->set_value(tfunc());
+								}
+							}
+							catch (...) {
+								try {
+									tprom->set_exception(std::current_exception());
+								} catch (...) {}
+							}
+						}};
+						if(priority) {
+							m_tasks.emplace_front(etask);
 						}
-					}};
-					if(priority) {
-						m_tasks.emplace_front(etask);
+						else {
+							m_tasks.emplace_back(etask);
+						}
+						m_taskMTX.unlock();
+						if(m_paused.load()) { m_missedTaskEnqueues++; } else { m_taskSem.spinOne(); }
+						break;
 					}
 					else {
-						m_tasks.emplace_back(etask);
+						m_taskMTX.unlock();
 					}
-					m_taskMTX.unlock();
-					if(m_paused.load()) { m_missedTaskEnqueues++; } else { m_taskSem.spinOne(); }
-					break;
 				}
-				else {
-					m_taskMTX.unlock();
+			}
+			return rtn;
+		}
+		else {
+			if(m_poolState != PoolState::INACTIVE) {
+				if(m_workers.size() < m_workerLimit) AllocateWorker();
+				while(true) {
+					if((m_tasks.size() >= m_queueLimit) && (m_queueProcedure == QueueProcedure::BLOCKING)) {
+						std::lock_guard<std::mutex> lock(m_pauseMTX);
+						m_taskSem.waitFor([&](const SizeType cVal, const SizeType CInitVal){ return (m_tasks.size() < m_queueLimit); });
+					}
+					m_taskMTX.lock();
+					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
+						std::function<RTN_T()> tfunc = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+						TaskType etask{[tfunc](){
+							try {
+								tfunc();
+							}
+							catch (...) {}
+						}};
+						if(priority) {
+							m_tasks.emplace_front(etask);
+						}
+						else {
+							m_tasks.emplace_back(etask);
+						}
+						m_taskMTX.unlock();
+						if(m_paused.load()) { m_missedTaskEnqueues++; } else { m_taskSem.spinOne(); }
+						break;
+					}
+					else {
+						m_taskMTX.unlock();
+					}
 				}
 			}
 		}
-		return rtn;
+		
 	}
 };
 #endif
