@@ -6,21 +6,15 @@
 
 #ifndef THREADPOOL_HPP_
 #define THREADPOOL_HPP_
-#include <csignal>
-#include <csetjmp>
-#include <cstring>
-#include <thread>
-#include <deque>
-// #include <vector>
-#include <functional>
-#include <future>
-// #include <utility>
-// #include <stdexcept>
-// #include <type_traits>
 
 #include "vendor/PlatformDetection/PlatformDetection.h"
 #include "vendor/ADVClock/vendor/Timestamp/timestamp.hpp"
 #include "vendor/Semaphore/semaphore.hpp"
+#include <csignal>
+#include <csetjmp>
+#include <thread>
+#include <deque>
+#include <future>
 
 using namespace std::this_thread;
 using namespace std::chrono;
@@ -136,6 +130,8 @@ class ThreadPool : public NonCopyable {
 	
 	void AllocateWorker() {
 		static const TaskType NullTask{[](){}};
+		static constexpr std::string_view _T{"T"};
+		static constexpr std::string_view _S{"S"};
 		if((m_workers.size() < m_workerLimit) && (m_poolState == PoolState::RUNNING)) {
 			std::lock_guard<std::mutex> lock(m_workerMTX);
 			if(m_workers.size() >= m_workerLimit) return;
@@ -172,8 +168,8 @@ class ThreadPool : public NonCopyable {
 							throw "T";
 						}
 					} catch(const char* e) {
-						strcmp(e, "T") ? void(0) : siglongjmp(RunTask, 1);
-						strcmp(e, "S") ? void(0) : siglongjmp(SigChk, 0);
+						(e == _T) ? siglongjmp(RunTask, 1) : void(0);
+						(e == _S) ? siglongjmp(SigChk, 0) : void(0);
 					}
 				}
 				self->ID = PlatformThread::IDType();
@@ -253,7 +249,7 @@ class ThreadPool : public NonCopyable {
 					}
 					m_taskMTX.lock();
 					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
-						std::function<RTN_T()> tfunc = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+						std::function<RTN_T()> tfunc{std::bind(std::forward<F>(f), std::forward<Args>(args)...)};
 						TaskType etask{[tprom, tfunc](){
 							try {
 								if constexpr(std::is_void<RTN_T>::value) {
@@ -297,10 +293,12 @@ class ThreadPool : public NonCopyable {
 					}
 					m_taskMTX.lock();
 					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
-						std::function<RTN_T()> tfunc = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+						std::function<RTN_T()> tfunc{std::bind(std::forward<F>(f), std::forward<Args>(args)...)};
 						TaskType etask{[tfunc](){
 							try {
 								tfunc();
+								// delete &tfunc;
+								// tfunc.~std::function<RTN_T()>();
 							}
 							catch (...) {}
 						}};
