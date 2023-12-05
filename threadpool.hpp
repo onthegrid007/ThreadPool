@@ -249,15 +249,14 @@ class ThreadPool : public NonCopyable {
 					}
 					m_taskMTX.lock();
 					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
-						std::function<RTN_T()> tfunc{std::bind(std::forward<F>(f), std::forward<Args>(args)...)};
-						TaskType etask{[tprom, tfunc](){
+					TaskType etask{[tprom, f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable {
 							try {
 								if constexpr(std::is_void<RTN_T>::value) {
-									tfunc();
+									std::apply(f, args);
 									tprom->set_value();
 								}
 								else {
-									tprom->set_value(tfunc());
+									tprom->set_value(std::apply(f, args));
 								}
 							}
 							catch (...) {
@@ -267,10 +266,10 @@ class ThreadPool : public NonCopyable {
 							}
 						}};
 						if(priority) {
-							m_tasks.emplace_front(etask);
+							m_tasks.emplace_front(std::move(etask));
 						}
 						else {
-							m_tasks.emplace_back(etask);
+							m_tasks.emplace_back(std::move(etask));
 						}
 						m_taskMTX.unlock();
 						if(m_paused.load()) { m_missedTaskEnqueues++; } else { m_taskSem.spinOne(); }
@@ -293,20 +292,17 @@ class ThreadPool : public NonCopyable {
 					}
 					m_taskMTX.lock();
 					if((m_tasks.size() < m_queueLimit) || (m_queueProcedure == QueueProcedure::NONBLOCKING)) {
-						std::function<RTN_T()> tfunc{std::bind(std::forward<F>(f), std::forward<Args>(args)...)};
-						TaskType etask{[tfunc](){
+					TaskType etask{[f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable {
 							try {
-								tfunc();
-								// delete &tfunc;
-								// tfunc.~std::function<RTN_T()>();
+								std::apply(f, args);
 							}
 							catch (...) {}
 						}};
 						if(priority) {
-							m_tasks.emplace_front(etask);
+							m_tasks.emplace_front(std::move(etask));
 						}
 						else {
-							m_tasks.emplace_back(etask);
+							m_tasks.emplace_back(std::move(etask));
 						}
 						m_taskMTX.unlock();
 						if(m_paused.load()) { m_missedTaskEnqueues++; } else { m_taskSem.spinOne(); }
