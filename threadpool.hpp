@@ -15,6 +15,8 @@
 #include <thread>
 #include <deque>
 #include <future>
+#include <string>
+#include <functional>
 
 using namespace std::this_thread;
 using namespace std::chrono;
@@ -22,7 +24,7 @@ using namespace std::chrono;
 class PlatformThread : public std::thread {
 	public:
 	template<typename... Args>
-	PlatformThread(Args... args) : std::thread(args...) {}//}, vState(VolitileState::RUNNING) {}
+	PlatformThread(Args... args) : std::thread(args...) {}
 	enum VolitileState : std::int8_t {
 		IDLE = 0,
 		RUNNING,
@@ -33,8 +35,8 @@ class PlatformThread : public std::thread {
 	typedef __pid_t IDType;
 	static const IDType ID() { return gettid(); }
 	#elif _BUILD_PLATFORM_WINDOWS
-	typedef std::thread::id IDType;
-	static const IDType ID() { return getThreadID(); }
+	typedef DWORD IDType;
+	static const IDType ID() { return GetThreadId(NULL); }
 	#endif
 	
 };
@@ -52,6 +54,7 @@ class ThreadPool : public NonCopyable {
 	enum EnqueuePriority : bool { DEFAULT = false, EXPEDITED };
 	enum QueueProcedure : bool { NONBLOCKING = false, BLOCKING };
 	
+	#ifdef _BUILD_PLATFORM_LINUX
 	void TogglePause() {
 		if(m_poolState == PoolState::RUNNING) {
 			m_poolState.store(PoolState::PAUSED);
@@ -77,6 +80,9 @@ class ThreadPool : public NonCopyable {
 			}
 		}
 	}
+	#elif _BUILD_PLATFORM_WINDOWS
+	void TogglePause() {}
+	#endif
 	
 	void ToggleQueueProcedure() {
 		// fix some other time
@@ -84,6 +90,7 @@ class ThreadPool : public NonCopyable {
 	}
 	
 	private:
+	#ifdef _BUILD_PLATFORM_LINUX
 	static void SIGHandler(int sig, siginfo_t* info, void* extra) {
 		const ThreadPool* pool{info->si_ptr ? (ThreadPool*)info->si_ptr : nullptr};
 		switch(sig) {
@@ -106,8 +113,9 @@ class ThreadPool : public NonCopyable {
 			break;
 		};
 	}
+	#endif
 	
-	typedef struct {
+	typedef struct WorkerType {
 		PlatformThread::IDType ID = 0;
 		PlatformThread::VolitileState vState = PlatformThread::VolitileState::RUNNING;
 		Timestamp Begin;
@@ -137,19 +145,32 @@ class ThreadPool : public NonCopyable {
 			Semaphore idLock{0};
 			PlatformThread([&](WorkerType* self){
 				TaskType T{NullTask};
+				#ifdef _BUILD_PLATFORM_LINUX
 				sigjmp_buf RunTask, SigChk;
+				#elif _BUILD_PLATFORM_WINDOWS
+				jmp_buf RunTask, SigChk;
+				#endif
 				self->ID = PlatformThread::ID();
 				idLock.inc();
+				#ifdef _BUILD_PLATFORM_LINUX
 				if(sigaction(SIGUSR1, &m_siga, NULL) != 0) throw std::runtime_error("Unable to set SIGUSR1 handler on new worker!");
 				if(sigaction(SIGUSR2, &m_siga, NULL) != 0) throw std::runtime_error("Unable to set SIGUSR2 handler on new worker!");
-				if(sigaction(SIGPOLL, &m_siga, NULL) != 0) throw std::runtime_error("Unable to set SIGPOLL handler on new worker!");
+				#endif
 				while((m_poolState.load() != PoolState::SHUTTING_DOWN) && (m_poolState.load() != PoolState::INACTIVE)) {
+					#ifdef _BUILD_PLATFORM_LINUX
 					if(sigsetjmp(RunTask, 1)) {
+					#elif _BUILD_PLATFORM_WINDOWS
+					if(setjmp(RunTask)) {
+					#endif
 						try {
 							T();
 						} catch(...) {}
 					}
+					#ifdef _BUILD_PLATFORM_LINUX
 					sigsetjmp(SigChk, 1);
+					#elif _BUILD_PLATFORM_WINDOWS
+					setjmp(SigChk);
+					#endif
 					try {
 						self->vState = PlatformThread::VolitileState::IDLE;
 						if(m_taskSem.waitFor([&](const int64_t cVal, const int64_t cInitVal){ return (!m_tasks.empty()) || (m_poolState.load() == PoolState::SHUTTING_DOWN) || (m_poolState.load() == PoolState::INACTIVE); }, 1000, 30) && (m_workers.size() > 2)) {
@@ -165,8 +186,13 @@ class ThreadPool : public NonCopyable {
 							throw "T";
 						}
 					} catch(const char* e) {
-						(e == _T) ? siglongjmp(RunTask, 1) : void(0);
-						(e == _S) ? siglongjmp(SigChk, 0) : void(0);
+						#ifdef _BUILD_PLATFORM_LINUX
+						if(e == _T) siglongjmp(RunTask, 1);
+						if(e == _S) siglongjmp(SigChk, 0);
+						#elif _BUILD_PLATFORM_WINDOWS
+						if(e == _T) longjmp(RunTask, 1);
+						if(e == _S) longjmp(SigChk, 0);
+						#endif
 					}
 				}
 				self->ID = PlatformThread::IDType();
@@ -189,8 +215,10 @@ class ThreadPool : public NonCopyable {
 	std::mutex m_pauseMTX;
 	std::atomic<bool> m_paused;
 	std::atomic<PoolState> m_poolState;
+	#ifdef _BUILD_PLATFORM_LINUX
 	static constexpr struct sigaction m_siga{.sa_sigaction = ThreadPool::SIGHandler, .sa_mask = {}, .sa_flags = SA_SIGINFO, .sa_restorer = nullptr};
 	const __sigval_t m_sv;
+	#endif
 	std::atomic<SizeType> m_missedTaskEnqueues; 
 	std::uint8_t m_decayTimeout{30};
 	
@@ -202,8 +230,11 @@ class ThreadPool : public NonCopyable {
 		m_workerSem(0),
 		m_taskSem(0),
 		m_paused(false),
-		m_poolState(PoolState::RUNNING),
-		m_sv({.sival_ptr = static_cast<void*>(this)}) {
+		m_poolState(PoolState::RUNNING)
+		#ifdef _BUILD_PLATFORM_LINUX
+		,m_sv({.sival_ptr = static_cast<void*>(this)})
+		#endif
+		{
 		for(char i = 0; i < 2; i++)
 			AllocateWorker();
 	}
@@ -213,25 +244,27 @@ class ThreadPool : public NonCopyable {
 			m_poolState.store(PoolState::SHUTTING_DOWN);
 			m_pauseMTX.unlock();
 			m_paused.store(false);
-			for(auto& worker : m_workers)
-				if(worker.ID != 0)
-					sigqueue(worker.ID, SIGPOLL, m_sv);
+			#ifdef _BUILD_PLATFORM_LINUX
+			for(auto& worker : m_workers) if(worker.ID != 0) sigqueue(worker.ID, SIGPOLL, m_sv);
+			#endif
 			sleep_for(seconds(1));
 		}
 		else {
 			m_poolState.store(PoolState::SHUTTING_DOWN);
 		}
 		for(auto& worker : m_workers) {
-			if(worker.ID != 0) {
-				// m_taskSem.spinAll();
-				sigqueue(worker.ID, SIGUSR1, m_sv);
-			}
+			#ifdef _BUILD_PLATFORM_LINUX
+			if(worker.ID != 0) sigqueue(worker.ID, SIGUSR1, m_sv);
+			#endif
 			while(worker.vState != PlatformThread::VolitileState::DEAD) m_taskSem.spinAll();
 		}
 		Decay();
 	}
-	
+	#ifdef _BUILD_PLATFORM_WINDOWS
+	template<bool wRTN, typename F, typename... Args, typename RTN_T = typename std::_Invoke_result_t<F, Args...>>
+	#else
 	template<bool wRTN, typename F, typename... Args, typename RTN_T = typename std::invoke_result<F, Args...>::type>
+	#endif
 	auto enqueue_work(F f, Args... args, EnqueuePriority&& priority) {
 		if constexpr(wRTN) {
 			auto tprom{std::make_shared<std::promise<RTN_T>>()};
