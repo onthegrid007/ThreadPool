@@ -1,6 +1,6 @@
 /*
 *   BSD 3-Clause License, see file labled 'LICENSE' for the full License.
-*   Copyright (c) 2023, Peter Ferranti
+*   Copyright (c) 2024, Peter Ferranti
 *   All rights reserved.
 */
 
@@ -30,13 +30,11 @@ class PlatformThread : public std::thread {
 		DEAD
 	};
 	#ifdef _BUILD_PLATFORM_LINUX
-	public:
 	typedef __pid_t IDType;
-	static IDType ID() { return gettid(); }
+	static const IDType ID() { return gettid(); }
 	#elif _BUILD_PLATFORM_WINDOWS
-	public:
 	typedef std::thread::id IDType;
-	IDType ID() { return getThreadID(); }
+	static const IDType ID() { return getThreadID(); }
 	#endif
 	
 };
@@ -81,13 +79,13 @@ class ThreadPool : public NonCopyable {
 	}
 	
 	void ToggleQueueProcedure() {
-		// fix someother time
+		// fix some other time
 		// m_queueProcedure = !m_queueProcedure;
 	}
 	
 	private:
 	static void SIGHandler(int sig, siginfo_t* info, void* extra) {
-		const ThreadPool* pool = (info->si_ptr ? (ThreadPool*)info->si_ptr : nullptr);
+		const ThreadPool* pool{info->si_ptr ? (ThreadPool*)info->si_ptr : nullptr};
 		switch(sig) {
 			case SIGUSR1:
 			if(pool) {
@@ -109,7 +107,7 @@ class ThreadPool : public NonCopyable {
 		};
 	}
 	
-	typedef struct Worker_t {
+	typedef struct {
 		PlatformThread::IDType ID = 0;
 		PlatformThread::VolitileState vState = PlatformThread::VolitileState::RUNNING;
 		Timestamp Begin;
@@ -135,8 +133,7 @@ class ThreadPool : public NonCopyable {
 		if((m_workers.size() < m_workerLimit) && (m_poolState == PoolState::RUNNING)) {
 			std::lock_guard<std::mutex> lock(m_workerMTX);
 			if(m_workers.size() >= m_workerLimit) return;
-			m_workers.emplace_back(); //nullptr, 0, {0}, Timestamp{});
-			WorkerType* newW{&m_workers.back()};
+			WorkerType* newW{&m_workers.emplace_back()};
 			Semaphore idLock{0};
 			PlatformThread([&](WorkerType* self){
 				TaskType T{NullTask};
@@ -174,7 +171,6 @@ class ThreadPool : public NonCopyable {
 				}
 				self->ID = PlatformThread::IDType();
 				self->vState = PlatformThread::VolitileState::DEAD;
-				return;
 			}, newW).detach();
 			idLock.waitForC(1);
 		}
