@@ -1,15 +1,12 @@
 /*
 *   BSD 3-Clause License, see file labled 'LICENSE' for the full License.
-*   Copyright (c) 2024, Peter Ferranti
+*   Copyright (c) 2025, Peter Ferranti
 *   All rights reserved.
 */
 
 #ifndef THREADPOOL_HPP_
 #define THREADPOOL_HPP_
 
-#include "vendor/PlatformDetection/PlatformDetection.h"
-#include "vendor/ADVClock/vendor/Timestamp/timestamp.hpp"
-#include "vendor/Semaphore/semaphore.hpp"
 #include <csignal>
 #include <csetjmp>
 #include <thread>
@@ -17,6 +14,9 @@
 #include <future>
 #include <string>
 #include <functional>
+#include "vendor/ADVClock/vendor/PlatformDetection/PlatformDetection.h"
+#include "vendor/ADVClock/vendor/Timestamp/timestamp.hpp"
+#include "vendor/Semaphore/semaphore.hpp"
 
 using namespace std::this_thread;
 using namespace std::chrono;
@@ -31,12 +31,12 @@ class PlatformThread : public std::thread {
 		PAUSED,
 		DEAD
 	};
-	#ifdef _BUILD_PLATFORM_LINUX
-	typedef __pid_t IDType;
-	static const IDType ID() { return gettid(); }
-	#elif _BUILD_PLATFORM_WINDOWS
-	typedef DWORD IDType;
-	static const IDType ID() { return GetThreadId(NULL); }
+	#if defined(_BUILD_PLATFORM_LINUX)
+		typedef __pid_t IDType;
+		static const IDType ID() { return gettid(); }
+	#elif defined(_BUILD_PLATFORM_WINDOWS)
+		typedef DWORD IDType;
+		static const IDType ID() { return GetThreadId(NULL); }
 	#endif
 	
 };
